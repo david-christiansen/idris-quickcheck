@@ -1,14 +1,22 @@
 module QuickCheck
 
--- Direct port from the first QuickCheck paper. Slow; needs work.
+import System
+import Debug.Trace
+-- Direct port from the first QuickCheck paper.
 
 %include C "time.h"
 
 --%default total
 
+doMsg : String -> IO ()
+doMsg message = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
+                   putStrLn $ show t ++ "\t" ++ message
+
 repeatN : Nat -> a -> List a
-repeatN Z x = []
-repeatN (S n) x = x :: repeatN n x
+repeatN n x = go n x []
+  where go : Nat -> a -> List a -> List a
+        go Z     x xs = xs
+        go (S n) x xs = go n x (x::xs)
 
 class RandomGen g where
   next : g -> (Int, g)
@@ -17,47 +25,36 @@ class RandomGen g where
 
 data StdGen = MkStdGen Int Int
 
+instance Show StdGen where
+  show (MkStdGen i j) = "MkStdGen " ++ show i ++ " " ++ show j
+
 -- Blatantly stolen from Haskell
 instance RandomGen StdGen where
-  next (MkStdGen s1 s2) = (z', MkStdGen s1'' s2'')
-    where
-          %assert_total k : Int
-          k    = s1 `prim__sdivInt` 53668
-          s1' : Int
-          s1'  = 40014 * (s1 - k * 53668) - k * 12211
-          s1'' : Int
-          s1'' = if s1' < 0 then s1' + 2147483563 else s1'
-          %assert_total k' : Int
-          k'   = s2 `prim__sdivInt` 52774
-          s2' : Int
-          s2'  = 40692 * (s2 - k' * 52774) - k' * 3791
-          s2'' : Int
-          s2'' = if s2' < 0 then s2' + 2147483399 else s2'
-          z : Int
-          z  = s1'' - s2''
-          z' : Int
-          z' = if z < 1 then z + 2147483562 else z
+  next (MkStdGen s1 s2) =
+    let k : Int = assert_total $ s1 `prim__sdivInt` 53668 in
+    let s1' : Int  = 40014 * (s1 - k * 53668) - k * 12211 in
+    let s1'' : Int = if s1' < 0 then s1' + 2147483563 else s1' in
+    let k' : Int = assert_total $ s2 `prim__sdivInt` 52774 in
+    let s2' : Int = 40692 * (s2 - k' * 52774) - k' * 3791 in
+    let s2'' : Int = if s2' <= 0 then s2' + 2147483399 else s2' in
+    let z : Int = s1'' - s2'' in
+    let z' : Int = if z < 1 then z + 2147483562 else z in
+    (z', MkStdGen s1'' s2'')
 
   genRange _ = (0, 2147483562)
-  split (MkStdGen s1 s2) = (left, right)
-    where gen' : StdGen
-          gen' = snd (next (MkStdGen s1 s2))
-          t1 : Int
-          t1 = case gen' of { MkStdGen a b => a}
-          t2 : Int
-          t2 = case gen' of { MkStdGen a b => b}
-          new_s1 : Int
-          new_s1 = if s1 == 2147483562
-                     then 1
-                     else s1 + 1
-          new_s2 : Int
-          new_s2 = if s2 == 1
-                     then 2147483398
-                     else s2 - 1
-          left : StdGen
-          left = MkStdGen new_s1 t2
-          right : StdGen
-          right = MkStdGen t1 new_s2
+  split (MkStdGen s1 s2) =
+    let gen' : StdGen = snd (next (MkStdGen s1 s2)) in
+    let t1 : Int = case gen' of { MkStdGen a b => a } in
+    let t2 : Int = case gen' of { MkStdGen a b => b } in
+    let new_s1 : Int = if s1 >= 2147483562 || s1 < 1
+                         then 1
+                         else s1 + 1 in
+    let new_s2 : Int = if s2 <= 1 || s2 >= 2147483398
+                         then 2147483398
+                         else s2 - 1 in
+    let left : StdGen = MkStdGen (new_s1 - 1) t2 in
+    let right : StdGen = MkStdGen t1 (new_s2 + 1) in
+    (left, right)
 
 
 
@@ -66,21 +63,40 @@ class Random a where
   random : RandomGen g => g -> (a, g)
 
 instance Random Int where
-  randomR (lo, hi) gen = if hi <= lo
-                           then (lo, (snd (next gen)))
-                           else let (x, gen') = next gen in
-                                let d = (hi - lo) in
-                                (lo + (mod x d), gen')
+  randomR (lo, hi) gen = assert_total $ myRandomR lo hi gen
+    where
+          myRandomR : RandomGen g => Int -> Int -> g -> (Int, g)
+          myRandomR {g=g} lo hi gen = assert_total $
+                         if lo > hi
+                           then myRandomR hi lo gen
+                           else case (f n 1 gen) of
+                                  (v, gen') => ((lo + v `mod` k), gen')
+            where
+              k : Int
+              k = hi - lo + 1
+              -- ERROR: b here (2^31-87) represents a baked-in assumption about genRange:
+              b : Int
+              b = 2147483561
+
+              iLogBase : Int -> Int
+              iLogBase i = if i < b then 1 else 1 + iLogBase (i `div` b)
+
+              n : Int
+              n = iLogBase k
+
+              -- Here we loop until we've generated enough randomness to cover the range:
+              f : RandomGen g => Int -> Int -> g -> (Int, g)
+              f 0 acc g = (acc, g)
+              f n' acc g =
+                let (x,g') = next g in
+                -- We shift over the random bits generated thusfar (* b) and add in the new ones.
+                f (n' - 1) (x + acc * b) g'
   random gen = next gen
 
-instance Random Nat where
-  randomR (lo, hi) gen = if hi <= lo
-                           then (lo, snd (next gen))
-                           else let (x, gen') = next gen in
-                                let d = (hi - lo) in
-                                (lo + ((cast {to=Nat} x) `mod` d), gen')
-  random gen = let gen' = next gen in
-               (cast (fst gen'), snd gen')
+--instance Random Nat where
+--  randomR (lo, hi) gen = (randomR (cast {to=Int} lo, cast {to=Int} hi) gen)
+--  random gen = let gen' = next gen in
+--               (cast (fst gen'), snd gen')
 
 instance Random () where
   randomR ((), ()) gen = ((), gen)
@@ -88,12 +104,17 @@ instance Random () where
 
 data Gen r a = MkGen (Int -> r -> a)
 
+instance Show (Gen r a) where
+  show _ = "<gen>"
+
 instance Functor (Gen r) where
   map f (MkGen g) = MkGen $ \i, r => f (g i r)
 
-instance Applicative (Gen r) where
+instance RandomGen r => Applicative (Gen r) where
   pure x = MkGen (\i, r => x)
-  (MkGen f) <$> (MkGen x) = MkGen (\i, r => f i r (x i r))
+  (MkGen f) <$> (MkGen x) = MkGen (\i, gen =>
+    let new = split gen in
+    f i (fst new) (x i (snd new)))
 
 instance RandomGen r => Monad (Gen r) where
   (MkGen m1) >>= k =
@@ -119,26 +140,20 @@ promote : RandomGen r => (a -> Gen r b) -> Gen r (a -> b)
 promote f = MkGen (\n, r, x => let MkGen m = f x in m n r )
 
 sized : RandomGen r => (Int -> Gen r a) -> Gen r a
-sized fgen = MkGen (\n, r =>
-                   let MkGen m = fgen n in m n r)
+sized fgen = MkGen (\n, r => let MkGen m = fgen n in m n r)
 
+partial
+unsafe_get : List a -> Int -> a
+unsafe_get (x :: xs) 0 = x
+unsafe_get (x :: xs) n = unsafe_get xs (n-1)
 
-%assert_total
-get : Vect (S n) a -> Int -> a
-get {n=n} {a=a} xs i = go (S n) xs i
-  where go : (m : Nat) -> Vect m a -> Int -> a
-        go Z [] i = go (S n) xs i
-        go (S m) (y :: ys) i = if i < 0
-                                 then go (S m) (y :: ys) (i + (cast (S n)))
-                                 else if i == 0 then y else go m ys (i-1)
+total
+elements : RandomGen r => List a -> Gen r a
+elements {r=r} xs = do i <- choose (the Int 0, (cast $ length xs) - 1)
+                       pure $ assert_total (unsafe_get xs i)
 
-
-
-elements : RandomGen r => Vect (S n) a -> Gen r a
-elements {r=r} {n=n} xs = do i <- choose (the Int 0, cast (S n))
-                             pure $ get xs i
-
-oneof : RandomGen r => Vect (S n) (Gen r a) -> Gen r a
+partial
+oneof : RandomGen r => List (Gen r a) -> Gen r a
 oneof gens = elements gens >>= id
 
 frequency : RandomGen r => List (Int, Gen r a) -> Gen r a
@@ -200,6 +215,9 @@ instance (RandomGen r, Coarbitrary r a) => Coarbitrary r (List a) where
 -- Properties
 record Result : Type where
   Res : (ok : Maybe Bool) ->  (stamp : List String) -> (arguments : List String) -> Result
+
+instance Show Result where
+  show (Res o s a) = "Result {" ++ show o ++ " " ++ show s ++ " " ++ show a ++ "}"
 
 data Property : Type -> Type where
   Prop : Gen r Result -> Property r
@@ -312,39 +330,59 @@ done mesg ntest stamps =
   entry : (Int, List String) -> String
   entry (n, xs) = percentage n ntest ++ " " ++ concat (intersperse ", " xs)
 
+printTime : String -> IO ()
+printTime lbl = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
+                   putStrLn (lbl ++ " --- " ++ show t)
+
+
+
 
 tests : Config -> Gen StdGen Result -> StdGen -> Int -> Int -> List (List String) -> IO ()
 tests config gen rnd0 ntest nfail stamps =
-  let (rnd1, rnd2) = split rnd0 in
-  let result = generate (size config ntest) rnd2 gen in
+  let s = split rnd0 in
+  let rnd1 = fst s in
+  let rnd2 = snd s in
   if ntest == maxTest config
     then done "OK, passed" ntest stamps
-    else do putStr (every config ntest (arguments result))
+    else do let ssss = size config ntest
+            let result = generate ssss rnd2 gen
+            putStrLn (every config ntest (arguments result))
             case ok result of
               Nothing    =>
                 tests config gen rnd1 ntest (nfail+1) stamps
               Just True  =>
                 tests config gen rnd1 (ntest+1) nfail (stamp result::stamps)
               Just False =>
-                putStr ( "Falsifiable, after "
-                      ++ show ntest
-                      ++ " tests:\n"
-                      ++ concat (intersperse "\n" (arguments result))
-                       )
+                putStrLn $ "Falsifiable, after "
+                           ++ show ntest
+                           ++ " tests:\n"
+                           ++ concat (intersperse "\n" (arguments result))
 
 
 
-
+stringNum : String -> Int -> Int
+stringNum s acc with (strM s)
+  stringNum ""             acc | StrNil = acc
+  stringNum (strCons x xs) acc | (StrCons x xs) = stringNum xs (acc + cast x)
 
 newStdGen : IO StdGen
---newStdGen = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
---               pure $ MkStdGen t t
-newStdGen = pure (MkStdGen 23462 254334222987)
+newStdGen = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
+               t' <- mkForeign (FFun "clock" [] FInt)
+               urandom <- openFile "/dev/urandom" Read
+               stuff <- fread urandom
+               closeFile urandom
+               pure $ MkStdGen (stringNum stuff t) (stringNum stuff t')
+--newStdGen = pure (MkStdGen 23462 254334222987)
+
+check' : Testable StdGen a => StdGen -> Config -> a -> IO ()
+check' rnd config x = tests config (evaluate x) rnd 0 0 []
 
 check : Testable StdGen a => Config -> a -> IO ()
 check config x =
   do rnd <- newStdGen
      tests config (evaluate x) rnd 0 0 []
+
+
 
 test : Testable StdGen a => a -> IO ()
 test = check quick
@@ -362,14 +400,71 @@ verboseCheck = check verbose
 prop_RevRev : Eq a => List a -> Bool
 prop_RevRev xs = reverse (reverse xs) == xs
 
+prop_listTriv : Eq a => List a -> Bool
+prop_listTriv xs = True
+
+stupid : List a -> List a
+stupid [] = []
+stupid [w,x,y,z] = []
+stupid (x::xs) = reverse xs ++ [x]
+
+prop_stupid : Eq a => List a -> Bool
+prop_stupid xs = stupid (stupid xs) == xs
 
 triv : () -> Bool
 triv () = True
 
-namespace Main
-  main : IO ()
-  main = quickCheck prop_RevRev --prop_RevRev
+atoi : String -> Maybe Int
+atoi "" = Nothing
+atoi xs = let xs' = sequence (map getI (unpack xs))
+          in map {f=Maybe} mkInt xs'
+    where getI : Char -> Maybe Int
+          getI c = if c >= '0' && c <= '9'
+                     then Just $ prim__charToInt c - prim__charToInt '0'
+                     else Nothing
+          mkInt : List (Int) -> Int
+          mkInt = foldl (\a => \b => 10 * a + b) 0
 
+
+namespace Main
+
+
+  testTest : IO ()
+  testTest =
+    do args <- getArgs
+       let numtests : (Int, Maybe Int) =
+          case args of
+            []                      => (10, Nothing)
+            [progname]              => (10, Nothing)
+            [progname, howmany]     => let t = maybe 10 id (atoi howmany) in (t, Nothing)
+            (progname::howmany::batchsize::_) => let t = maybe 10 id (atoi howmany) in
+                                                 let b = maybe t id (atoi batchsize) in
+                                                 (t, Just b)
+       case numtests of
+         (m, Nothing) => check (record {maxTest = m} verbose) triv
+         (m, Just b) =>
+           let config = record { maxTest = min m b } verbose in
+           test 0 m config
+
+    where test : Int -> Int -> Config -> IO ()
+          test n  max config = do check config prop_stupid --prop_RevRev
+                                  if n >= max
+                                    then pure ()
+                                    else test (n+(maxTest config)) max config
+
+  lotsaNumbers : IO ()
+  lotsaNumbers = do go !newStdGen 15
+                    go !newStdGen 15
+                    go !newStdGen 15
+    where go : StdGen -> Int -> IO ()
+          go _   0 = pure ()
+          go gen n = do putStr (show n ++ "  ")
+                        let x = next gen
+                        putStrLn (show (fst x))
+                        go (snd x) (n - 1)
+
+  main : IO ()
+  main = testTest
 
 
 -- Local Variables:
