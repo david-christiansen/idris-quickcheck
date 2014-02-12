@@ -87,52 +87,36 @@ frequency xs = choose (1, sum (map fst xs)) >>= (assert_total $ flip pick xs)
 
 class RandomGen r => Arbitrary r a where
   arbitrary : Gen r a
-
-instance RandomGen r => Arbitrary r Bool where
-  arbitrary = elements [True, False]
-
-instance RandomGen r => Arbitrary r Int where
-  arbitrary = sized (\n => choose (-n,n))
+  partial coarbitrary : a -> Gen r b -> Gen r b
 
 instance RandomGen r => Arbitrary r () where
   arbitrary = pure ()
+  coarbitrary () = variant 0
 
-instance (RandomGen r, Arbitrary r a, Arbitrary r b) => Arbitrary r (a, b) where
+instance RandomGen r => Arbitrary r Bool where
+  arbitrary = elements [True, False]
+  coarbitrary True = variant 0
+  coarbitrary False = variant 1
+
+instance RandomGen r => Arbitrary r Int where
+  arbitrary = sized (\n => choose (-n,n))
+  coarbitrary n = variant (cast $ if n >= 0 then 2*n else 2*(-n) + 1)
+
+instance (RandomGen r, Arbitrary r t1, Arbitrary r t2) => Arbitrary r (t1, t2) where
   arbitrary = liftA2 (\n,m => (n, m)) arbitrary arbitrary
+  coarbitrary (x, y) g = coarbitrary x (coarbitrary y g)
 
 instance (RandomGen r, Arbitrary r a) => Arbitrary r (List a) where
   arbitrary = sized (\n => do i <- choose (0, n)
                               sequence (repeatN (cast i) arbitrary))
-
-class RandomGen r => Coarbitrary r a where
-  partial coarbitrary : a -> Gen r b -> Gen r b
-
-instance RandomGen r => Coarbitrary r Bool where
-  coarbitrary b = variant (if b then 0 else 1)
-
-instance RandomGen r => Coarbitrary r Int where
-  coarbitrary n =
-    if n == 0
-      then variant 0
-      else if n < 0
-             then variant 2 . coarbitrary (-n)
-             else variant 1 . coarbitrary (assert_total $ n `div` 2)
-
-instance (RandomGen r, Arbitrary r arg, Coarbitrary r ret )=> Coarbitrary r (arg -> ret) where
-  coarbitrary f gen = arbitrary >>= ((flip coarbitrary gen) . f)
-
-
---NB doesnt follow paper
-instance (RandomGen r, Coarbitrary r a, Arbitrary r b) => Arbitrary r (a -> b) where
-  arbitrary = promote (flip coarbitrary arbitrary)
-
-instance (RandomGen r, Coarbitrary r t1, Coarbitrary r t2) => Coarbitrary r (t1, t2) where
-  coarbitrary (a, b) = coarbitrary a . coarbitrary b
-
-instance (RandomGen r, Coarbitrary r a) => Coarbitrary r (List a) where
   coarbitrary [] = variant 0
   coarbitrary (x::xs) = variant 1 . coarbitrary x . coarbitrary xs
 
+
+--NB doesnt follow paper
+instance (RandomGen r, Arbitrary r t1, Arbitrary r t2) => Arbitrary r (t1 -> t2) where
+  arbitrary = promote (flip coarbitrary arbitrary)
+  coarbitrary f gen = arbitrary  >>= ((flip coarbitrary gen) . f)
 
 -- Properties
 record Result : Type where
@@ -311,7 +295,8 @@ verboseCheck : Testable StdGen a => a -> IO ()
 verboseCheck = check verbose
 
 
-
+instance Eq () where
+  () == () = True
 ----
 
 prop_RevRev : Eq a => List a -> Bool
