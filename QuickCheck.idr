@@ -6,7 +6,7 @@ import Debug.Trace
 
 %include C "time.h"
 
---%default total
+%default total
 
 doMsg : String -> IO ()
 doMsg message = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
@@ -79,7 +79,7 @@ instance Random Int where
               b = 2147483561
 
               iLogBase : Int -> Int
-              iLogBase i = if i < b then 1 else 1 + iLogBase (i `div` b)
+              iLogBase i = if i < b then 1 else 1 + iLogBase (assert_smaller i (assert_total $ i `div` b))
 
               n : Int
               n = iLogBase k
@@ -90,7 +90,7 @@ instance Random Int where
               f n' acc g =
                 let (x,g') = next g in
                 -- We shift over the random bits generated thusfar (* b) and add in the new ones.
-                f (n' - 1) (x + acc * b) g'
+                f (assert_smaller n' $ n' - 1) (x + acc * b) g'
   random gen = next gen
 
 --instance Random Nat where
@@ -152,13 +152,15 @@ elements : RandomGen r => List a -> Gen r a
 elements {r=r} xs = do i <- choose (the Int 0, (cast $ length xs) - 1)
                        pure $ assert_total (unsafe_get xs i)
 
-partial
+
 oneof : RandomGen r => List (Gen r a) -> Gen r a
 oneof gens = elements gens >>= id
 
 frequency : RandomGen r => List (Int, Gen r a) -> Gen r a
-frequency xs = choose (1, sum (map fst xs)) >>= (flip pick xs)
+frequency xs = choose (1, sum (map fst xs)) >>= (assert_total $ flip pick xs)
   where
+    partial
+    pick : Int -> List (Int, a) -> a
     pick n ((k,x)::xs) = if n <= k then x else pick (n-k) xs
 
 -- Arbitrary
@@ -183,7 +185,7 @@ instance (RandomGen r, Arbitrary r a) => Arbitrary r (List a) where
                               sequence (repeatN (cast i) arbitrary))
 
 class RandomGen r => Coarbitrary r a where
-  coarbitrary : a -> Gen r b -> Gen r b
+  partial coarbitrary : a -> Gen r b -> Gen r b
 
 instance RandomGen r => Coarbitrary r Bool where
   coarbitrary b = variant (if b then 0 else 1)
@@ -194,7 +196,7 @@ instance RandomGen r => Coarbitrary r Int where
       then variant 0
       else if n < 0
              then variant 2 . coarbitrary (-n)
-             else variant 1 . coarbitrary (n `div` 2)
+             else variant 1 . coarbitrary (assert_total $ n `div` 2)
 
 instance (RandomGen r, Arbitrary r arg, Coarbitrary r ret )=> Coarbitrary r (arg -> ret) where
   coarbitrary f gen = arbitrary >>= ((flip coarbitrary gen) . f)
@@ -279,6 +281,7 @@ record Config : Type where
              (every : Int -> List String -> String) ->
              Config
 
+partial
 quick : Config
 quick = MkConfig 10 --100
           10 -- 1000
@@ -287,11 +290,13 @@ quick = MkConfig 10 --100
              let s = show n in
              Strings.(++) s (pack $ repeatN (length s) '\b'))
 
+partial
 verbose : Config
 verbose = record {
             every = \n, args => show n ++ ":\n" ++ concat (intersperse "\n" args)
           } quick
 
+partial
 group : Eq a => List a -> List (List a)
 group [] = []
 group (x :: xs) = let next = span (==x) xs in
@@ -301,7 +306,7 @@ group (x :: xs) = let next = span (==x) xs in
 
 
 
-
+partial
 done : String -> Int -> List (List String) -> IO ()
 done mesg ntest stamps =
   do putStr ( mesg ++ " " ++ show ntest ++ " tests" ++ table )
@@ -321,12 +326,15 @@ done mesg ntest stamps =
   display [x] = " (" ++ x ++ ").\n"
   display xs  = ".\n" ++ (concat (intersperse "\n" (map (++ ".") xs)))
 
+  partial
   percentage : Int -> Int -> String
   percentage n m = show ((100 * n) `div` m) ++ "%"
 
+  partial
   pairLength : List a -> (Int, a)
   pairLength (xs::xss) = (cast (length (xs::xss)), xs)
 
+  partial
   entry : (Int, List String) -> String
   entry (n, xs) = percentage n ntest ++ " " ++ concat (intersperse ", " xs)
 
@@ -336,7 +344,7 @@ printTime lbl = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
 
 
 
-
+partial
 tests : Config -> Gen StdGen Result -> StdGen -> Int -> Int -> List (List String) -> IO ()
 tests config gen rnd0 ntest nfail stamps =
   let s = split rnd0 in
@@ -363,8 +371,11 @@ tests config gen rnd0 ntest nfail stamps =
 stringNum : String -> Int -> Int
 stringNum s acc with (strM s)
   stringNum ""             acc | StrNil = acc
-  stringNum (strCons x xs) acc | (StrCons x xs) = stringNum xs (acc + cast x)
+  stringNum (strCons x xs) acc | (StrCons x xs) =
+    stringNum (assert_smaller (strCons x xs) xs)
+              (acc + cast x)
 
+partial
 newStdGen : IO StdGen
 newStdGen = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
                t' <- mkForeign (FFun "clock" [] FInt)
@@ -374,22 +385,26 @@ newStdGen = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
                pure $ MkStdGen (stringNum stuff t) (stringNum stuff t')
 --newStdGen = pure (MkStdGen 23462 254334222987)
 
+partial
 check' : Testable StdGen a => StdGen -> Config -> a -> IO ()
 check' rnd config x = tests config (evaluate x) rnd 0 0 []
 
+partial
 check : Testable StdGen a => Config -> a -> IO ()
 check config x =
   do rnd <- newStdGen
      tests config (evaluate x) rnd 0 0 []
 
 
-
+partial
 test : Testable StdGen a => a -> IO ()
 test = check quick
 
+partial
 quickCheck : Testable StdGen a => a -> IO ()
 quickCheck = check quick
 
+partial
 verboseCheck : Testable StdGen a => a -> IO ()
 verboseCheck = check verbose
 
@@ -428,6 +443,7 @@ atoi xs = let xs' = sequence (map getI (unpack xs))
 
 namespace Main
 
+  %default partial
 
   testTest : IO ()
   testTest =
@@ -451,7 +467,6 @@ namespace Main
                                   if n >= max
                                     then pure ()
                                     else test (n+(maxTest config)) max config
-
   lotsaNumbers : IO ()
   lotsaNumbers = do go !newStdGen 15
                     go !newStdGen 15
