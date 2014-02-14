@@ -102,6 +102,20 @@ instance RandomGen r => Arbitrary r Int where
   arbitrary = sized (\n => choose (-n,n))
   coarbitrary n = variant (cast $ if n >= 0 then 2*n else 2*(-n) + 1)
 
+instance RandomGen r => Arbitrary r Integer where
+  arbitrary = sized (\n => map {f=Gen r} cast $ choose (-n, n))
+  coarbitrary n = variant (cast $ if n >= 0 then 2*n else 2*(-n) + 1)
+
+instance RandomGen r => Arbitrary r Float where
+  arbitrary = sized (\n => do a <- choose (-n*100000000, n*100000000)
+                              b <- choose (1, 100000000)
+                              return (prim__toFloatInt a / prim__toFloatInt b))
+  coarbitrary n = variant (cast $ prim__fromFloatInt (n * 100000.0))
+
+instance RandomGen r => Arbitrary r Nat where
+  arbitrary = sized (\n => map {f=Gen r} cast $ choose (0,n))
+  coarbitrary = variant
+
 instance (RandomGen r, Arbitrary r t1, Arbitrary r t2) => Arbitrary r (t1, t2) where
   arbitrary = liftA2 (\n,m => (n, m)) arbitrary arbitrary
   coarbitrary (x, y) g = coarbitrary x (coarbitrary y g)
@@ -135,7 +149,7 @@ result : (RandomGen r) => Result -> Property r
 result = Prop . pure
 
 class RandomGen r => Testable r a where
-  property : a -> Property r
+  partial property : a -> Property r
 
 instance RandomGen r => Testable r Bool where
   property b = result (record {ok = Just b} nothing)
@@ -365,8 +379,8 @@ namespace Main
                         putStrLn (show (fst x))
                         go (snd x) (n - 1)
 
-  main : IO ()
-  main = testTest
+--  main : IO ()
+--  main = testTest
 
 
 -- Local Variables:
