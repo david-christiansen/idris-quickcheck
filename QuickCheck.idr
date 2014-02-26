@@ -2,7 +2,8 @@ module QuickCheck
 
 import System
 import Debug.Trace
-import Random
+import System.Random.TF.Random --Random
+import System.Random.TF.Gen
 
 -- Direct port from the first QuickCheck paper.
 
@@ -27,23 +28,28 @@ data Gen r a = MkGen (Int -> r -> a)
 instance Show (Gen r a) where
   show _ = "<gen>"
 
-instance Functor (Gen r) where
-  map f (MkGen g) = MkGen $ \i, r => f (g i r)
+instance RandomGen r => Functor (Gen r) where
+  map f (MkGen g) = MkGen $ \i, r => f (g i (snd (next r)))
 
 instance RandomGen r => Applicative (Gen r) where
   pure x = MkGen (\i, r => x)
-  (MkGen f) <$> (MkGen x) = MkGen (\i, gen =>
-    let new = split gen in
-    f i (fst new) (x i (snd new)))
+  (MkGen f) <$> (MkGen x) =
+    MkGen $ \i, r =>
+            let (r1, r2) = split r in
+            f i (snd (next r1)) (x i (snd (next r2)))
+
 
 instance RandomGen r => Monad (Gen r) where
   (MkGen m1) >>= k =
     MkGen $ \i, r => let (r1, r2) = split r in
-                     let (MkGen m2) = k (m1 i r1) in
-                     m2 i r2
+                     let (MkGen m2) = k (m1 i (snd (next r1))) in
+                     m2 i (snd (next r2))
+
+rand : (RandomGen r) => Gen r r
+rand = MkGen (\n, r => r)
 
 choose : (RandomGen r, Random a) => (a, a) -> Gen r a
-choose bounds = MkGen (\n, r => fst (randomR bounds r))
+choose bounds = map (fst . randomR bounds) rand
 
 variant : RandomGen r => Nat -> Gen r a -> Gen r a
 variant v (MkGen m) = MkGen (\ n, r => m n (getV (S v) r))
@@ -80,7 +86,7 @@ frequency : RandomGen r => List (Int, Gen r a) -> Gen r a
 frequency xs = choose (1, sum (map fst xs)) >>= (assert_total $ flip pick xs)
   where
     partial
-    pick : Int -> List (Int, a) -> a
+    pick : Int -> List (Int, b) -> b
     pick n ((k,x)::xs) = if n <= k then x else pick (n-k) xs
 
 -- Arbitrary
@@ -107,10 +113,10 @@ instance RandomGen r => Arbitrary r Integer where
   coarbitrary n = variant (cast $ if n >= 0 then 2*n else 2*(-n) + 1)
 
 instance RandomGen r => Arbitrary r Float where
-  arbitrary = sized (\n => do a <- choose (-n*100000000, n*100000000)
-                              b <- choose (1, 100000000)
+  arbitrary = sized (\n => do a <- choose (-n*1000000, n*1000000)
+                              b <- choose (1, 1000000)
                               return (prim__toFloatInt a / prim__toFloatInt b))
-  coarbitrary n = variant (cast $ prim__fromFloatInt (n * 100000.0))
+  coarbitrary n = variant (cast $ prim__fromFloatInt (n * 10000.0))
 
 instance RandomGen r => Arbitrary r Nat where
   arbitrary = sized (\n => map {f=Gen r} cast $ choose (0,n))
@@ -263,7 +269,7 @@ printTime lbl = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
 
 
 partial
-tests : Config -> Gen StdGen Result -> StdGen -> Int -> Int -> List (List String) -> IO ()
+tests : RandomGen g => Config -> Gen g Result -> g -> Int -> Int -> List (List String) -> IO ()
 tests config gen rnd0 ntest nfail stamps =
   let s = split rnd0 in
   let rnd1 = fst s in
@@ -275,9 +281,9 @@ tests config gen rnd0 ntest nfail stamps =
             putStrLn (every config ntest (arguments result))
             case ok result of
               Nothing    =>
-                tests config gen rnd1 ntest (nfail+1) stamps
+                tests config gen (snd (next rnd1)) ntest (nfail+1) stamps
               Just True  =>
-                tests config gen rnd1 (ntest+1) nfail (stamp result::stamps)
+                tests config gen (snd (next rnd1)) (ntest+1) nfail (stamp result::stamps)
               Just False =>
                 putStrLn $ "Falsifiable, after "
                            ++ show ntest
@@ -286,31 +292,29 @@ tests config gen rnd0 ntest nfail stamps =
 
 
 partial
-check' : Testable StdGen a => StdGen -> Config -> a -> IO ()
+check' : Testable TFGen a => TFGen -> Config -> a -> IO ()
 check' rnd config x = tests config (evaluate x) rnd 0 0 []
 
 partial
-check : Testable StdGen a => Config -> a -> IO ()
+check : Testable TFGen a => Config -> a -> IO ()
 check config x =
-  do rnd <- newStdGen
+  do seed <- mkSeed
+     let rnd = seedTFGen seed
      tests config (evaluate x) rnd 0 0 []
 
 
 partial
-test : Testable StdGen a => a -> IO ()
+test : Testable TFGen a => a -> IO ()
 test = check quick
 
 partial
-quickCheck : Testable StdGen a => a -> IO ()
+quickCheck : Testable TFGen a => a -> IO ()
 quickCheck = check quick
 
 partial
-verboseCheck : Testable StdGen a => a -> IO ()
+verboseCheck : Testable TFGen a => a -> IO ()
 verboseCheck = check verbose
 
-
-instance Eq () where
-  () == () = True
 ----
 
 prop_RevRev : Eq a => List a -> Bool
@@ -342,6 +346,7 @@ atoi xs = let xs' = sequence (map getI (unpack xs))
           mkInt = foldl (\a => \b => 10 * a + b) 0
 
 
+
 namespace Main
 
   %default partial
@@ -364,27 +369,22 @@ namespace Main
            test 0 m config
 
     where test : Int -> Int -> Config -> IO ()
-          test n  max config = do check config prop_stupid --prop_RevRev
+          test n  max config = do check config (prop_RevRev {a=Int})
                                   if n >= max
                                     then pure ()
                                     else test (n+(maxTest config)) max config
-  lotsaNumbers : IO ()
-  lotsaNumbers = do go !newStdGen 15
-                    go !newStdGen 15
-                    go !newStdGen 15
-    where go : StdGen -> Int -> IO ()
-          go _   0 = pure ()
-          go gen n = do putStr (show n ++ "  ")
-                        let x = next gen
-                        putStrLn (show (fst x))
-                        go (snd x) (n - 1)
 
---  main : IO ()
---  main = testTest
+  main : IO ()
+  main = do
+     testTest
+     let gen : Gen TFGen (List Int) = sequence (repeatN 30 arbitrary)
+     case gen of
+        MkGen f => let xs = f 100 (seedTFGen (MkBlock256 0 1 2 3))
+                   in putStrLn (show xs)
 
 
 -- Local Variables:
--- idris-packages: ("neweffects")
+-- idris-packages: ("neweffects" "tfrandom")
 -- End:
 
 -- -}
