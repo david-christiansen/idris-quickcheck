@@ -15,7 +15,7 @@ stringNum s acc with (strM s)
   stringNum ""             acc | StrNil = acc
   stringNum (strCons x xs) acc | (StrCons x xs) =
     stringNum (assert_smaller (strCons x xs) xs)
-              (acc + cast x)
+              (prim__shlInt 1 acc + cast x)
 
 partial
 newStdGen : IO StdGen
@@ -24,7 +24,10 @@ newStdGen = do t <- mkForeign (FFun "time" [FPtr] FInt) prim__null
                urandom <- openFile "/dev/urandom" Read
                stuff <- fread urandom
                closeFile urandom
-               pure $ MkStdGen (stringNum stuff t) (stringNum stuff t')
+               urandom <- openFile "/dev/urandom" Read
+               stuff' <- fread urandom
+               closeFile urandom
+               pure $ MkStdGen (stringNum stuff t) (stringNum stuff' t')
 --newStdGen = pure (MkStdGen 23462 254334222987)
 
 
@@ -55,8 +58,8 @@ instance RandomGen StdGen where
     let new_s2 : Int = if s2 <= 1 || s2 >= 2147483398
                          then 2147483398
                          else s2 - 1 in
-    let left : StdGen = MkStdGen (new_s1 - 1) t2 in
-    let right : StdGen = MkStdGen t1 (new_s2 + 1) in
+    let left : StdGen = snd (next (MkStdGen new_s1 t2)) in
+    let right : StdGen = snd (next (MkStdGen t1 new_s2)) in
     (left, right)
 
 
@@ -69,11 +72,11 @@ instance Random Int where
   randomR (lo, hi) gen = assert_total $ myRandomR lo hi gen
     where
           myRandomR : RandomGen g => Int -> Int -> g -> (Int, g)
-          myRandomR {g=g} lo hi gen = assert_total $
+          myRandomR lo hi gen = assert_total $
                          if lo > hi
                            then myRandomR hi lo gen
                            else case (f n 1 gen) of
-                                  (v, gen') => ((lo + v `mod` k), gen')
+                                  (v, gen') => ((lo + (abs v) `mod` k), gen')
             where
               k : Int
               k = hi - lo + 1
@@ -82,18 +85,23 @@ instance Random Int where
               b = 2147483561
 
               iLogBase : Int -> Int
-              iLogBase i = if i < b then 1 else 1 + iLogBase (assert_smaller i (assert_total $ i `div` b))
+              iLogBase i = if b <= 1
+                              then 1
+                              else if i < b
+                                     then 1
+                                     else 1 + iLogBase (assert_smaller i (assert_total $ i `div` b))
 
               n : Int
               n = iLogBase k
 
               -- Here we loop until we've generated enough randomness to cover the range:
               f : RandomGen g => Int -> Int -> g -> (Int, g)
-              f 0 acc g = (acc, g)
               f n' acc g =
-                let (x,g') = next g in
-                -- We shift over the random bits generated thusfar (* b) and add in the new ones.
-                f (assert_smaller n' $ n' - 1) (x + acc * b) g'
+                if n' <= 0
+                   then (acc, g)
+                   else let (x,g') = next g in
+                        -- We shift over the random bits generated thusfar (* b) and add in the new ones.
+                        f (assert_smaller n' $ n' - 1) (x + acc * b) g'
   random gen = next gen
 
 --instance Random Nat where

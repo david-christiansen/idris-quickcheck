@@ -109,7 +109,7 @@ instance RandomGen r => Arbitrary r Int where
   coarbitrary n = variant (cast $ if n >= 0 then 2*n else 2*(-n) + 1)
 
 instance RandomGen r => Arbitrary r Integer where
-  arbitrary = sized (\n => map {f=Gen r} cast $ choose (-n, n))
+  arbitrary = sized (\n => map {f=Gen _} cast $ choose (-n, n))
   coarbitrary n = variant (cast $ if n >= 0 then 2*n else 2*(-n) + 1)
 
 instance RandomGen r => Arbitrary r Float where
@@ -119,7 +119,7 @@ instance RandomGen r => Arbitrary r Float where
   coarbitrary n = variant (cast $ prim__fromFloatInt (n * 10000.0))
 
 instance RandomGen r => Arbitrary r Nat where
-  arbitrary = sized (\n => map {f=Gen r} cast $ choose (0,n))
+  arbitrary = sized (\n => map {f=Gen _} cast $ choose (0,n))
   coarbitrary = variant
 
 instance (RandomGen r, Arbitrary r t1, Arbitrary r t2) => Arbitrary r (t1, t2) where
@@ -277,13 +277,18 @@ tests config gen rnd0 ntest nfail stamps =
   if ntest == maxTest config
     then done "OK, passed" ntest stamps
     else do let ssss = size config ntest
+            putStrLn "fnords"
             let result = generate ssss rnd2 gen
+            putStrLn "got a result"
             putStrLn (every config ntest (arguments result))
+            putStrLn "did some stuff"
             case ok result of
               Nothing    =>
-                tests config gen (snd (next rnd1)) ntest (nfail+1) stamps
+                do putStrLn "nothing"
+                   tests config gen (snd (next rnd1)) ntest (nfail+1) stamps
               Just True  =>
-                tests config gen (snd (next rnd1)) (ntest+1) nfail (stamp result::stamps)
+                do putStrLn "Just T"
+                   tests config gen (snd (next rnd1)) (ntest+1) nfail (stamp result::stamps)
               Just False =>
                 putStrLn $ "Falsifiable, after "
                            ++ show ntest
@@ -298,8 +303,11 @@ check' rnd config x = tests config (evaluate x) rnd 0 0 []
 partial
 check : Testable TFGen a => Config -> a -> IO ()
 check config x =
-  do seed <- mkSeed
+  do putStrLn "getting seed"
+     seed <- mkSeed
+     putStrLn "seed gotten"
      let rnd = seedTFGen seed
+     putStrLn "seeded generator"
      tests config (evaluate x) rnd 0 0 []
 
 
@@ -376,6 +384,7 @@ namespace Main
 
   main : IO ()
   main = do
+     putStrLn "starting"
      testTest
      let gen : Gen TFGen (List Int) = sequence (repeatN 30 arbitrary)
      case gen of

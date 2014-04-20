@@ -3,6 +3,9 @@ module Play
 -- Playing with quickcheck over a universe
 
 import QuickCheck
+import Debug.Trace
+
+%default total
 
 using (c : Type -> Type, c' : Type -> Type, t : Type)
   getInst : c t => c t
@@ -19,6 +22,12 @@ nums = [ (Int     ** getInst2)
        ]
 
 data NumEq = INT | INTEGER | FLOAT | NAT
+
+instance Show NumEq where
+  show INT = "INT"
+  show INTEGER = "INTEGER"
+  show FLOAT = "FLOAT"
+  show NAT = "NAT"
 
 interpNumEq : NumEq -> Type
 interpNumEq INT     = Int
@@ -53,6 +62,14 @@ instance Num (interpNumEq t) where
   (*) = let inst = fst (insts _) in (*) @{inst}
   abs = let inst = fst (insts _) in abs @{inst}
 
+instance Show (interpNumEq t) where
+  show = show @{getShow _}
+    where getShow : (t : NumEq) -> Show (interpNumEq t)
+          getShow INT = %instance
+          getShow INTEGER = %instance
+          getShow FLOAT = %instance
+          getShow NAT = %instance
+
 getGen : RandomGen r => Gen r (interpNumEq t)
 getGen {t=INT} = arbitrary
 getGen {t=INTEGER} = arbitrary
@@ -77,8 +94,9 @@ instance [ok] (RandomGen r, Testable r b) => Testable r ((t : NumEq) -> List (in
   property f = Prop $ do ty <- arbitrary {a=NumEq}
                          xs <- arbitrary {a=List (interpNumEq ty)}
                          res <- evaluate (f ty xs)
-                         let stuff = pure {f = Gen r} res
-                         stuff
+                         pure (arg ty xs res)
+  where arg : (t : NumEq) -> (xs : List (interpNumEq t)) -> Result -> Result
+        arg t xs res = record { arguments = show t :: show xs :: arguments res } res
 
 
 total
@@ -92,6 +110,11 @@ checkSumList : (t : NumEq) -> List (interpNumEq t) -> Bool
 checkSumList t xs = sumList xs == sumList (rearrange xs [] [])
 
 
+myprop : Property StdGen
+myprop = Prop $ evaluate (checkSumList INT [1,2,3])
+
+
 namespace Main
+  partial
   main : IO ()
-  main = quickCheck @{ok} checkSumList
+  main = verboseCheck @{ok} checkSumList
